@@ -1,0 +1,13 @@
+# Phase 2 — data generation dependencies only.
+#
+# Kept in a separate file from backend/requirements.txt on purpose: the
+# FastAPI backend does not need pandas/numpy to serve /health, and won't
+# need them until a later phase exposes prediction endpoints that load a
+# trained model. Keeping them separate means `pip install -r
+# backend/requirements.txt` for backend work stays fast and lean, and the
+# ml/ tooling can be installed independently by anyone just working on data
+# generation. No model-training libraries (scikit-learn, xgboost, lightgbm,
+# shap) are included here — those belong to a later phase.
+
+pandas>=2.2
+numpy>=1.26
