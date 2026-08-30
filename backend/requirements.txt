@@ -1,0 +1,11 @@
+# Phase 1 — minimal foundation dependencies only.
+# ML libraries (pandas, numpy, scikit-learn, xgboost/lightgbm, shap) are
+# deliberately NOT listed here — they belong to a later phase when model
+# work actually begins.
+
+fastapi==0.115.6
+uvicorn[standard]==0.32.1
+pydantic==2.10.3
+python-dotenv==1.0.1
+pytest==8.3.4
+httpx==0.28.1
