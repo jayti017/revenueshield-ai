@@ -81,17 +81,16 @@ Outcome → stored → used in offline policy evaluation
 
 ## 8. Current Phase
 
-**Phase 3 — Payment Failure Risk Model.**
+**Phase 3B — Action-Outcome Models.**
 
-Phase 1 (project foundation) and Phase 2 (synthetic dataset) are complete.
-Phase 3's only objective is a single supporting model — `P(payment failure |
-pre-outcome information)` — trained and evaluated on the Phase 2 dataset.
-See the "Phase 3 — Payment Failure Risk Model" section near the end of this
-document for the full write-up.
+Phase 1 (project foundation), Phase 2 (synthetic dataset), and Phase 3A
+(payment failure risk model) are complete. Phase 3B's only objective is four
+supporting models — one per recovery action — each estimating `P(success |
+features, this action was taken)`. See the "Phase 3B — Action-Outcome
+Models" section near the end of this document for the full write-up.
 
 **The following are explicitly NOT implemented yet:**
 
-- action-outcome models (`retry` / `reminder` / `recovery_link` / `do_nothing`)
 - expected revenue calculation
 - decision engine
 - merchant constraints
@@ -102,7 +101,7 @@ document for the full write-up.
 
 ## 9. Future Development Phases (indicative, not commitments)
 
-- **Phase 4:** Action-outcome models (one per recovery action) + decision engine (expected revenue, constraints, explanation)
+- **Phase 4:** Decision engine (expected revenue, merchant constraints, explanation, action selection)
 - **Phase 5:** Audit trail + offline policy evaluation against baselines
 - **Phase 6:** Frontend (dashboard, individual decision screen)
 - **Phase 7:** Razorpay Test Mode integration
@@ -191,8 +190,10 @@ RevenueShield/
 ├── ml/
 │   ├── generate_data.py       # Phase 2: synthetic dataset generator
 │   ├── validate_data.py       # Phase 2: dataset validation + quality report
-│   ├── train_risk_model.py    # Phase 3: trains the failure-risk model
-│   ├── evaluate_risk_model.py # Phase 3: evaluates it on val/test/cold-start
+│   ├── train_risk_model.py    # Phase 3A: trains the failure-risk model
+│   ├── evaluate_risk_model.py # Phase 3A: evaluates it on val/test/cold-start
+│   ├── train_action_models.py    # Phase 3B: trains 4 per-action outcome models
+│   ├── evaluate_action_models.py # Phase 3B: evaluates each on val/test/cold-start
 │   ├── requirements.txt       # pandas, numpy, scikit-learn, joblib — no XGBoost/SHAP/etc.
 │   ├── data/
 │   │   ├── raw/
@@ -203,7 +204,11 @@ RevenueShield/
 │   │       ├── test.csv                # generated, not committed
 │   │       └── cold_start.csv          # generated, not committed
 │   └── models/
-│       └── risk_model.joblib   # generated, not committed — trained pipeline (preprocessing + Logistic Regression)
+│       ├── risk_model.joblib              # generated, not committed
+│       ├── action_model_do_nothing.joblib     # generated, not committed
+│       ├── action_model_retry.joblib          # generated, not committed
+│       ├── action_model_reminder.joblib       # generated, not committed
+│       └── action_model_recovery_link.joblib  # generated, not committed
 ├── frontend/                  # empty — not built yet
 ├── tests/
 │   ├── __init__.py
@@ -346,7 +351,7 @@ python ml/generate_data.py --n-samples 20000 --cold-start-n 2000 --seed 7
 python ml/validate_data.py
 ```
 
-## 13. Phase 3 — Payment Failure Risk Model
+## 13. Phase 3A — Payment Failure Risk Model
 
 ### Purpose
 
@@ -495,4 +500,128 @@ python ml/train_risk_model.py
 
 ```powershell
 python ml/evaluate_risk_model.py
+```
+
+## 14. Phase 3B — Action-Outcome Models
+
+### Why there are four models
+
+RevenueShield's eventual decision engine needs `P(success | features,
+action)` for each of the four candidate actions, so it can compare their
+expected value. A single model with `action` as an ordinary input feature
+would let the model implicitly average/interpolate across actions in ways
+that are hard to inspect or trust. Training one independent model per
+action — each fit only on the historical rows where that specific action
+was actually taken — keeps each estimate self-contained and matches the
+Phase 3B spec's explicit modeling requirement.
+
+### What each model predicts
+
+`action_model_<action>.joblib` predicts `P(payment_success = 1 | features)`
+**for payments that historically received `<action>`**. Note the target
+here is `payment_success` directly (unlike the Phase 3A risk model, which
+predicts `1 - payment_success`) — Phase 3B asks for a success probability,
+not a failure probability.
+
+### Features used
+
+The same 10 pre-outcome features as the Phase 3A risk model: `customer_type`,
+`payment_method`, `merchant_category` (one-hot encoded), and
+`customer_tenure_days`, `payment_amount`, `previous_payment_count`,
+`previous_success_count`, `previous_failure_count`, `previous_retry_count`,
+`days_since_last_payment` (standardized).
+
+### Columns excluded to prevent leakage
+
+`payment_success`, `payment_status`, `failure_reason`, `amount_recovered`,
+`transaction_id`, `customer_id` — the usual outcome/identifier leakage
+columns. **`action` itself is also excluded from the feature matrix**: since
+each model is trained on a single-action subset, `action` would be constant
+within that subset anyway, but excluding it explicitly keeps the modeling
+approach correct in spirit — one model per action, never a model that treats
+action as a switch to flip. Both `train_action_models.py` and
+`evaluate_action_models.py` assert none of these columns are present before
+fitting/scoring, failing loudly if one appears.
+
+### How cold-start customers are handled
+
+Cold-start rows (`customer_type = new`, all `previous_*` fields `0`) are
+valid, in-range input to every action model — `0` is a legitimate value for
+each `previous_*` feature, and `"new"` is a category the `OneHotEncoder`
+already saw during training (it isn't an unseen category), so no
+preprocessing errors occur. `evaluate_action_models.py` evaluates each
+model on `cold_start.csv` and reports it separately.
+
+**Actual cold-start result:** ROC-AUC drops close to (and for `reminder`,
+slightly below) 0.5 for every action model — e.g. `do_nothing` 0.6228 (test)
+→ 0.5157 (cold-start), `reminder` 0.7075 (test) → 0.4604 (cold-start). Every
+cold-start confusion matrix shows the model predicting "success" for every
+single row at the 0.5 threshold. This matches the Phase 3A risk model's
+cold-start finding: with no payment history, these models currently have
+little-to-no ability to discriminate for brand-new customers and default to
+predicting the (high) baseline success rate for everyone. This is reported
+plainly, not adjusted for — it's a genuine limitation for Phase 4 to
+account for (e.g. via the confidence-threshold fallback already documented
+in Section 4/Core Idea), not something this phase attempted to fix.
+
+### Why these predictions should not be interpreted as causal treatment effects
+
+Each model is trained on **observational, synthetic** data: which action a
+transaction received was itself chosen based on that transaction's
+pre-action risk level (see Section 12's "assignment confounding" note — the
+same generator produced both the risk-model and action-model training data).
+So `action_model_retry.joblib`'s output means "among payments that
+historically received `retry`, conditional on these features, this is the
+observed success rate" — it does **not** mean "if we retried this specific
+payment instead of doing something else, this is the probability it would
+succeed." Those are only the same thing under an assumption (no unobserved
+confounding) that this phase does not attempt to verify or correct for — no
+uplift modeling, propensity weighting, or causal inference was implemented,
+by design (out of scope for Phase 3B). A future decision engine consuming
+these models' output should treat it as a reasonable observational estimate
+for an MVP, not a validated causal effect.
+
+### Metrics (test set, from the actual run)
+
+| Action | ROC-AUC (model) | ROC-AUC (baseline) | Brier (model) | Brier (baseline) |
+|---|---|---|---|---|
+| `do_nothing` | 0.6228 | 0.5000 | 0.1203 | 0.1268 |
+| `retry` | 0.6639 | 0.5000 | 0.1474 | 0.1554 |
+| `reminder` | 0.7075 | 0.5000 | 0.1602 | 0.1757 |
+| `recovery_link` | 0.7191 | 0.5000 | 0.1437 | 0.1588 |
+
+Every action model beats its constant-probability baseline on both ROC-AUC
+and Brier score on the test set. Precision/recall/F1 at the 0.5 threshold
+are high but not very informative for `do_nothing`/`retry` specifically —
+success rates for those actions are 80–85%, so a model predicting "success"
+most of the time scores well on recall almost by construction; ROC-AUC and
+Brier are the more meaningful diagnostics here, same reasoning as Phase 3A.
+
+### Model artifacts
+
+```
+ml/models/action_model_do_nothing.joblib
+ml/models/action_model_retry.joblib
+ml/models/action_model_reminder.joblib
+ml/models/action_model_recovery_link.joblib
+```
+Each is a complete fitted `Pipeline` (preprocessing + Logistic Regression),
+directly loadable via `joblib.load()`.
+
+### Reproducibility
+
+`RANDOM_SEED = 42`. Verified: running `train_action_models.py` twice
+produces byte-identical `.joblib` files for all four actions (same MD5 hash
+both times).
+
+### How to train
+
+```powershell
+python ml/train_action_models.py
+```
+
+### How to evaluate
+
+```powershell
+python ml/evaluate_action_models.py
 ```
