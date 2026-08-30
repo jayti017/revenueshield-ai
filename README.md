@@ -81,30 +81,28 @@ Outcome → stored → used in offline policy evaluation
 
 ## 8. Current Phase
 
-**Phase 2 — Synthetic Payment Dataset.**
+**Phase 3 — Payment Failure Risk Model.**
 
-Phase 1 (project foundation: FastAPI skeleton, `/health`, tests) is
-complete. Phase 2's only objective is a realistic, reproducible synthetic
-payment dataset that a later phase will use to train models. See the
-"Phase 2 — Synthetic Payment Dataset" section near the end of this document
-for the full write-up.
+Phase 1 (project foundation) and Phase 2 (synthetic dataset) are complete.
+Phase 3's only objective is a single supporting model — `P(payment failure |
+pre-outcome information)` — trained and evaluated on the Phase 2 dataset.
+See the "Phase 3 — Payment Failure Risk Model" section near the end of this
+document for the full write-up.
 
 **The following are explicitly NOT implemented yet:**
 
-- ML models (risk model, action-outcome models)
-- risk prediction
-- action prediction
+- action-outcome models (`retry` / `reminder` / `recovery_link` / `do_nothing`)
 - expected revenue calculation
 - decision engine
-- explainability (SHAP)
+- merchant constraints
 - audit system
+- explainability (SHAP)
 - frontend
 - Razorpay integration
 
 ## 9. Future Development Phases (indicative, not commitments)
 
-- **Phase 3:** Payment risk model + action-outcome models
-- **Phase 4:** Decision engine (expected revenue, constraints, explanation)
+- **Phase 4:** Action-outcome models (one per recovery action) + decision engine (expected revenue, constraints, explanation)
 - **Phase 5:** Audit trail + offline policy evaluation against baselines
 - **Phase 6:** Frontend (dashboard, individual decision screen)
 - **Phase 7:** Razorpay Test Mode integration
@@ -193,7 +191,9 @@ RevenueShield/
 ├── ml/
 │   ├── generate_data.py       # Phase 2: synthetic dataset generator
 │   ├── validate_data.py       # Phase 2: dataset validation + quality report
-│   ├── requirements.txt       # pandas, numpy only — no ML training libraries yet
+│   ├── train_risk_model.py    # Phase 3: trains the failure-risk model
+│   ├── evaluate_risk_model.py # Phase 3: evaluates it on val/test/cold-start
+│   ├── requirements.txt       # pandas, numpy, scikit-learn, joblib — no XGBoost/SHAP/etc.
 │   ├── data/
 │   │   ├── raw/
 │   │   │   └── payments_raw.csv        # generated, not committed (see .gitignore)
@@ -202,7 +202,8 @@ RevenueShield/
 │   │       ├── validation.csv          # generated, not committed
 │   │       ├── test.csv                # generated, not committed
 │   │       └── cold_start.csv          # generated, not committed
-│   └── models/                # empty — trained model artifacts land here in a later phase
+│   └── models/
+│       └── risk_model.joblib   # generated, not committed — trained pipeline (preprocessing + Logistic Regression)
 ├── frontend/                  # empty — not built yet
 ├── tests/
 │   ├── __init__.py
@@ -343,4 +344,155 @@ python ml/generate_data.py --n-samples 20000 --cold-start-n 2000 --seed 7
 
 ```powershell
 python ml/validate_data.py
+```
+
+## 13. Phase 3 — Payment Failure Risk Model
+
+### Purpose
+
+The risk model estimates `P(payment failure | information available before
+the outcome)` for an upcoming recurring payment. It is supporting
+infrastructure, not RevenueShield's core innovation — a later phase's
+decision engine will use its output as one input among several. It does not
+decide anything and does not calculate expected revenue.
+
+### Target variable
+
+```
+failure_target = 1 - payment_success
+```
+So `payment_success = 1` (succeeded) → `failure_target = 0`, and
+`payment_success = 0` (failed) → `failure_target = 1`. The model outputs
+`failure_probability` via `predict_proba()`, a value in `[0, 1]`.
+
+### Input features (10)
+
+**Categorical** (one-hot encoded): `customer_type`, `payment_method`, `merchant_category`
+
+**Numeric** (standardized): `customer_tenure_days`, `payment_amount`,
+`previous_payment_count`, `previous_success_count`, `previous_failure_count`,
+`previous_retry_count`, `days_since_last_payment`
+
+### Prohibited leakage features
+
+`payment_success`, `failure_target`, `amount_recovered`, `payment_status`,
+`failure_reason`, `transaction_id`, `customer_id` are all excluded from the
+feature matrix, and both `train_risk_model.py` and `evaluate_risk_model.py`
+explicitly assert none of them are present before training/evaluating —
+failing loudly if one ever appears.
+
+**`action` is also deliberately excluded**, and not just because it's
+"post-decision" — in the Phase 2 generator, which action was historically
+applied was itself chosen based on the payment's risk level (riskier
+payments were more likely to receive an active intervention). Including
+`action` as a risk-model feature would leak that historical assignment
+policy into what is supposed to be a pre-decision risk estimate.
+
+### Preprocessing approach
+
+A single `scikit-learn` `Pipeline`: a `ColumnTransformer` (`OneHotEncoder`
+for the 3 categorical columns, `StandardScaler` for the 7 numeric columns)
+feeding a `LogisticRegression`. No manual numeric label assignment (no
+`card=1, upi=2`) — one-hot encoding avoids implying a false ordering between
+categories.
+
+### Model choice
+
+**Logistic Regression**, as specified: interpretable, fast, produces
+well-calibrated-by-default probabilities, and an appropriate MVP baseline.
+`class_weight` was deliberately left at its default (not `"balanced"`) —
+RevenueShield will eventually feed these probabilities directly into an
+expected-value calculation, and class-weighting would distort them away
+from reflecting the true failure rate, which matters more here than
+balanced classification accuracy at an arbitrary threshold. XGBoost/LightGBM
+were not used — not necessary for this baseline and would add complexity
+without a demonstrated need.
+
+### Training / validation / test data
+
+Reused directly from Phase 2's customer-aware split — no re-shuffling:
+
+- Train: `ml/data/processed/train.csv` (35,062 rows)
+- Validation: `ml/data/processed/validation.csv` (7,321 rows) — used during training to report held-out performance
+- Test: `ml/data/processed/test.csv` (7,617 rows) — final evaluation only, in `evaluate_risk_model.py`
+
+### Cold-start evaluation
+
+Also evaluated on `ml/data/processed/cold_start.csv` (5,000 rows, all
+brand-new customers with zero payment history). Result: **ROC-AUC drops
+from 0.68 (test set) to 0.51 (cold-start)** — essentially no better than
+chance. This is an honest, expected finding, not a bug: cold-start rows have
+`previous_payment_count = previous_success_count = previous_failure_count =
+previous_retry_count = 0` for every row, and that customer-history signal is
+what the model leans on most. The model still receives `customer_type`,
+`payment_amount`, `payment_method`, `merchant_category`, and
+`customer_tenure_days` for cold-start rows, but that alone isn't enough to
+meaningfully separate risk in this dataset. This is a real limitation worth
+carrying into the next phase, not something this phase tried to paper over.
+
+### Metrics (test set, from the actual run)
+
+| Metric | Model | Constant baseline |
+|---|---|---|
+| ROC-AUC | **0.6829** | 0.5000 (by definition) |
+| Brier score | **0.1406** | 0.1515 |
+| Precision (@0.5) | 0.5130 | 0.0000 |
+| Recall (@0.5) | 0.0558 | 0.0000 |
+| F1 (@0.5) | 0.1006 | 0.0000 |
+
+The model clearly beats the baseline on both ROC-AUC and Brier score — it
+has real, if moderate, predictive signal. Precision/recall/F1 at the default
+0.5 threshold are not very informative here: with an ~18% base failure
+rate, a plain 0.5 cutoff is a poor operating point (predicted probabilities
+cluster below 0.5 even for many true failures), which is expected for a
+model whose real use is feeding a probability into an expected-value
+calculation rather than making a binary call at 0.5. A later phase choosing
+an actual decision threshold should tune it against the business objective,
+not use 0.5 by default.
+
+### Calibration
+
+A simple 10-bin calibration check (mean predicted probability vs. observed
+failure rate per bin) was run on the test set — see `evaluate_risk_model.py`
+output. Calibration is reasonably good in the well-populated low-probability
+bins (where most of the data sits) and noisier in the sparsely-populated
+high-probability bins (as few as 14–41 rows per bin there), which is
+expected given how few test-set rows fall above ~0.5 predicted probability.
+No adjustment was made to the model to improve this metric — it's reported
+as-is, per the Phase 3 spec. If a later phase needs better-calibrated
+probabilities in the high-risk range specifically, Platt scaling or isotonic
+regression would be the natural next step, applied on top of this model
+rather than replacing it.
+
+### Baseline comparison
+
+A constant-probability baseline (predicting the training-set failure rate,
+17.99%, for every test-set row) is computed in `evaluate_risk_model.py` for
+comparison. The trained model beats it on both ROC-AUC (0.68 vs. 0.50) and
+Brier score (0.1406 vs. 0.1515), demonstrating the model adds real
+predictive value beyond a trivial constant guess.
+
+### Model artifact
+
+`ml/models/risk_model.joblib` — the complete fitted `Pipeline` (preprocessing
++ Logistic Regression), directly loadable via `joblib.load()` for future
+inference. Not the raw `LogisticRegression` object alone, since raw new data
+still needs the same one-hot encoding / scaling applied first.
+
+### Reproducibility
+
+`RANDOM_SEED = 42`, passed to `LogisticRegression(random_state=...)`.
+Verified: running `train_risk_model.py` twice produces a byte-identical
+`risk_model.joblib` (same MD5 hash both times).
+
+### How to train
+
+```powershell
+python ml/train_risk_model.py
+```
+
+### How to evaluate
+
+```powershell
+python ml/evaluate_risk_model.py
 ```

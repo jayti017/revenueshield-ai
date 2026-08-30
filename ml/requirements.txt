@@ -1,13 +1,16 @@
-# Phase 2 — data generation dependencies only.
+# Phase 2 (data generation) + Phase 3 (risk model) dependencies.
 #
 # Kept in a separate file from backend/requirements.txt on purpose: the
-# FastAPI backend does not need pandas/numpy to serve /health, and won't
-# need them until a later phase exposes prediction endpoints that load a
-# trained model. Keeping them separate means `pip install -r
+# FastAPI backend does not need pandas/numpy/scikit-learn to serve /health,
+# and won't need them until a later phase exposes prediction endpoints that
+# load a trained model. Keeping them separate means `pip install -r
 # backend/requirements.txt` for backend work stays fast and lean, and the
 # ml/ tooling can be installed independently by anyone just working on data
-# generation. No model-training libraries (scikit-learn, xgboost, lightgbm,
-# shap) are included here — those belong to a later phase.
+# or models. No XGBoost/LightGBM/SHAP/PyTorch/TensorFlow are included —
+# Logistic Regression via scikit-learn is sufficient for the Phase 3
+# baseline and none of those libraries were needed.
 
 pandas>=2.2
 numpy>=1.26
+scikit-learn>=1.4
+joblib>=1.3
