@@ -1,24 +1,30 @@
 """
 RevenueShield AI — backend entrypoint.
 
-Phase 1 scope only: this file exists to prove that Python + virtual
-environment + FastAPI + Uvicorn + basic testing work correctly together.
-
-Nothing else is implemented here yet. No decision engine, no ML models, no
-database logic, no Razorpay integration. See README.md for the full list of
-what is and isn't built yet.
+Phase 1 proved Python + virtual environment + FastAPI + Uvicorn + basic
+testing work correctly together. Phase 4 adds the decision API
+(POST /api/v1/decision), which is a thin interface around the EXISTING
+Phase 3C decision engine — no decision logic lives in this file or in the
+route/service layer it wires in. See README.md for the full phase-by-phase
+history and what is/isn't built yet.
 """
 
 from fastapi import FastAPI
 
+from app.api.routes.decision import router as decision_router
+
 app = FastAPI(
     title="RevenueShield AI",
-    description="Explainable Revenue Recovery Decision Engine — backend (Phase 1 foundation)",
-    version="0.1.0",
+    description="Explainable Revenue Recovery Decision Engine — backend",
+    version="0.4.0",
 )
+
+app.include_router(decision_router)
 
 
 @app.get("/health")
 def health_check():
-    """Confirms the backend process is running. Nothing else exists yet."""
+    """Confirms the backend process is running. Unchanged since Phase 1 —
+    kept backward compatible on purpose.
+    """
     return {"status": "ok", "phase": "1"}

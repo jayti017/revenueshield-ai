@@ -81,28 +81,32 @@ Outcome → stored → used in offline policy evaluation
 
 ## 8. Current Phase
 
-**Phase 3B — Action-Outcome Models.**
+**Phase 4 — FastAPI Decision API.**
 
-Phase 1 (project foundation), Phase 2 (synthetic dataset), and Phase 3A
-(payment failure risk model) are complete. Phase 3B's only objective is four
-supporting models — one per recovery action — each estimating `P(success |
-features, this action was taken)`. See the "Phase 3B — Action-Outcome
-Models" section near the end of this document for the full write-up.
+Phase 1 (project foundation), Phase 2 (synthetic dataset), Phase 3A
+(payment failure risk model), Phase 3B (four action-outcome models), and
+Phase 3C (decision engine) are complete. Phase 4's only objective is a thin
+FastAPI layer exposing the existing Phase 3C decision engine over HTTP —
+`POST /api/v1/decision`. No decision-making logic was moved into the API;
+it calls the existing engine and returns what it produces. See the
+"Phase 4 — FastAPI Decision API" section near the end of this document for
+the full write-up.
 
 **The following are explicitly NOT implemented yet:**
 
-- expected revenue calculation
-- decision engine
-- merchant constraints
-- audit system
-- explainability (SHAP)
-- frontend
+- React frontend
+- dashboard
 - Razorpay integration
+- real payment processing
+- production authentication
+- database persistence
+- payment webhooks
+- notification systems
+- offline policy evaluation against baselines (Random / Always Retry / Default strategy)
 
 ## 9. Future Development Phases (indicative, not commitments)
 
-- **Phase 4:** Decision engine (expected revenue, merchant constraints, explanation, action selection)
-- **Phase 5:** Audit trail + offline policy evaluation against baselines
+- **Phase 5:** Offline policy evaluation (RevenueShield vs. Random / Always Retry / Default strategy), audit-trail storage, and the incremental-revenue business metric
 - **Phase 6:** Frontend (dashboard, individual decision screen)
 - **Phase 7:** Razorpay Test Mode integration
 
@@ -179,14 +183,18 @@ RevenueShield/
 ├── backend/
 │   ├── app/
 │   │   ├── __init__.py
-│   │   ├── main.py          # FastAPI app, /health only
-│   │   ├── api/              # empty — route handlers land here later
-│   │   ├── models/           # empty — later
-│   │   ├── services/         # empty — decision engine logic lands here later
-│   │   ├── schemas/          # empty — Pydantic schemas land here later
-│   │   └── utils/            # empty — later
+│   │   ├── main.py          # FastAPI app: /health + includes the decision router
+│   │   ├── api/
+│   │   │   └── routes/
+│   │   │       └── decision.py   # Phase 4: POST /api/v1/decision (calls the service layer only)
+│   │   ├── models/           # empty — unused so far
+│   │   ├── services/
+│   │   │   └── decision_service.py  # Phase 4: thin wrapper calling ml/decision_engine.decide()
+│   │   ├── schemas/
+│   │   │   └── decision.py   # Phase 4: Pydantic request/response models
+│   │   └── utils/            # empty — unused so far
 │   ├── .env.example
-│   └── requirements.txt
+│   └── requirements.txt      # includes -r ../ml/requirements.txt — see Phase 4 section
 ├── ml/
 │   ├── generate_data.py       # Phase 2: synthetic dataset generator
 │   ├── validate_data.py       # Phase 2: dataset validation + quality report
@@ -194,7 +202,8 @@ RevenueShield/
 │   ├── evaluate_risk_model.py # Phase 3A: evaluates it on val/test/cold-start
 │   ├── train_action_models.py    # Phase 3B: trains 4 per-action outcome models
 │   ├── evaluate_action_models.py # Phase 3B: evaluates each on val/test/cold-start
-│   ├── requirements.txt       # pandas, numpy, scikit-learn, joblib — no XGBoost/SHAP/etc.
+│   ├── decision_engine.py        # Phase 3C: combines models into a decision + explanation + audit record
+│   ├── requirements.txt       # pandas, numpy, scikit-learn, joblib — exact-pinned, no XGBoost/SHAP/etc.
 │   ├── data/
 │   │   ├── raw/
 │   │   │   └── payments_raw.csv        # generated, not committed (see .gitignore)
@@ -212,8 +221,10 @@ RevenueShield/
 ├── frontend/                  # empty — not built yet
 ├── tests/
 │   ├── __init__.py
-│   ├── conftest.py            # makes backend/app importable from project root
-│   └── test_health.py
+│   ├── conftest.py             # makes backend/app importable from project root
+│   ├── test_health.py          # Phase 1
+│   ├── test_decision_engine.py # Phase 3C
+│   └── test_api_decision.py    # Phase 4
 ├── docs/
 ├── .gitignore
 └── README.md
@@ -625,3 +636,330 @@ python ml/train_action_models.py
 ```powershell
 python ml/evaluate_action_models.py
 ```
+
+## 15. Phase 3C — Explainable Decision Engine
+
+### What the decision engine does
+
+`ml/decision_engine.py` combines the Phase 3A risk model and the four
+Phase 3B action-outcome models — loaded as-is, never retrained here — to
+answer, for one at-risk payment: *which permitted action should be taken,
+and why?* For each of the four actions it gets a predicted success
+probability from that action's model, converts it to an expected revenue
+figure, removes any action the merchant has excluded, picks the highest-
+expected-revenue action among what's left, and returns a human-readable
+explanation plus a structured audit record. It does not call any external
+API, store anything in a database, or expose an HTTP endpoint.
+
+### How expected revenue is calculated
+
+```
+expected_revenue[action] = payment_amount × P(success | features, action)
+```
+computed for all four actions using their respective Phase 3B models, then
+the merchant-permitted subset is compared to find the maximum.
+
+### How constraints work
+
+`MerchantConstraints` is a small, deliberately simple dataclass:
+
+- `allowed_actions` — a set of which of the four actions this merchant permits at all (default: all four).
+- `max_retry_count` — if set, `retry` is excluded once `previous_retry_count` reaches this value.
+
+There is no equivalent numeric limit for `reminder` — the dataset does not
+track a `previous_reminder_count` field (only `previous_retry_count` exists;
+see Section 12's field reference), so reminder frequency can only be
+controlled coarsely via `allowed_actions` for this MVP. This is a known,
+documented limitation, not an oversight.
+
+**`do_nothing` is a guaranteed fallback.** If a merchant configuration would
+exclude every action (including, in principle, `do_nothing` itself), the
+engine still permits `do_nothing` — it's the one action that can't violate
+a friction/cost constraint since it takes no action at all. Verified by
+`test_do_nothing_is_the_guaranteed_fallback`.
+
+**Tie-breaking** is deterministic: when two or more permitted actions land
+within `TIE_BREAK_EPSILON` (₹0.01) of the highest expected revenue, the
+engine picks whichever of the tied actions comes first in
+`ACTION_PRIORITY = ["do_nothing", "retry", "reminder", "recovery_link"]` —
+ascending order of assumed customer friction, so ties are broken toward the
+least intrusive option rather than arbitrarily. Verified by
+`test_tie_breaking_is_deterministic`.
+
+### How cold-start is handled
+
+Cold-start features (`previous_payment_count = 0`, etc.) are valid,
+in-range input to every model — `0` is a legitimate numeric value and
+`"new"` is a category the encoder already saw during training, so nothing
+crashes. What changes is the **confidence label**: see below.
+
+### Confidence — an explicit, documented proxy, not a statistical estimate
+
+Phase 3A/3B did not produce calibrated prediction intervals (no ensemble
+variance, no Bayesian posterior). Rather than fabricate a number that looks
+statistically rigorous but isn't, the engine uses a simple, transparent
+heuristic based on `previous_payment_count`:
+
+| `previous_payment_count` | Confidence level |
+|---|---|
+| 0 | `low` |
+| 1–2 | `medium` |
+| 3+ | `standard` |
+
+This threshold isn't arbitrary marketing — it's the one thing Phase 3A/3B's
+own evaluation actually demonstrated: cold-start ROC-AUC collapsed toward
+0.5 across every model (Sections 13–14) specifically because
+`previous_payment_count = 0` removes the history-based features those
+models lean on most. Every `DecisionResult.confidence` dict includes a
+`method` field stating explicitly that this is a heuristic proxy, not a
+statistical confidence interval — so nothing downstream can mistake it for
+one.
+
+### How explanations are generated
+
+`_build_explanation()` builds the explanation directly from the same
+numbers used for selection — it does not free-generate text or call an LLM.
+It always names the selected action and its actual expected-revenue and
+predicted-probability values, lists the other permitted actions considered
+(with their own values), lists any actions a merchant constraint removed
+and why, states the pre-action failure risk, and — only when confidence is
+`low` or `medium` — appends an explicit low/medium-confidence note. Because
+the text is built from the same variables as the decision itself, it cannot
+diverge from the numeric outcome by construction; `test_explanation_matches_
+selected_action` checks this holds.
+
+### What's stored in the audit record
+
+Every `decide()` call returns a `DecisionResult.audit_record` dict with:
+
+- `transaction_id`, `customer_id` (as passed in, or `None`)
+- `predicted_failure_risk` (Phase 3A model output)
+- `action_success_probabilities` — all four actions, not just the selected one
+- `expected_revenue` — all four actions
+- `constraints_applied` — the merchant's `allowed_actions`/`max_retry_count` plus which actions were removed and why
+- `permitted_actions` — the post-constraint action list actually compared
+- `selected_action`
+- `reason` — the full explanation string
+- `confidence` — the level/basis/method dict described above
+- `causal_disclaimer` — a fixed string restating the limitation below, attached to every single record so it travels with the data rather than living only in documentation
+
+### Limitations of observational action-outcome models
+
+This is worth restating plainly, because it's the single most important
+caveat in the whole engine: **`action_success_probabilities` are not causal
+treatment effects.** The Phase 3B models are trained on synthetic historical
+data where which action a transaction received was itself chosen based on
+that transaction's risk level (documented in Section 12). So
+`action_model_recovery_link.joblib` predicting an 88% success probability
+for a given payment means "payments like this one that historically
+received `recovery_link` succeeded about 88% of the time" — not "sending
+this specific payment a recovery link would cause an 88% chance of success
+instead of whatever else might have been tried." The engine's explanation
+text and audit record both say "predicted success probability," never
+"causal effect" or "if we had instead," specifically to avoid implying a
+claim that Phase 3B's observational models don't support. Correcting for
+this (uplift modeling, propensity weighting, or genuine causal inference)
+is explicitly out of scope for Phase 3C, per the spec.
+
+### Files
+
+```
+ml/decision_engine.py           # public API: decide(), MerchantConstraints, DecisionResult
+tests/test_decision_engine.py   # 11 tests covering all 8 required scenarios (+3 extra)
+```
+
+### How to run the demo
+
+```powershell
+python ml/decision_engine.py
+```
+
+### How to run the tests
+
+```powershell
+pytest tests/test_decision_engine.py -v
+```
+or, for the full suite including Phase 1:
+```powershell
+pytest
+```
+
+## 16. Phase 4 — FastAPI Decision API
+
+### What Phase 4 adds
+
+A thin FastAPI layer exposing the existing Phase 3C decision engine over
+HTTP: `POST /api/v1/decision`. Nothing about the decision logic itself
+changed — Phase 4 is purely an interface around Phase 3C.
+
+### How the API connects to Phase 3C
+
+```
+HTTP request
+    ↓
+app/schemas/decision.py   — Pydantic validates the request
+    ↓
+app/services/decision_service.py  — builds the features dict + MerchantConstraints,
+                                     calls ml.decision_engine.decide() directly
+    ↓
+ml/decision_engine.py (Phase 3C, UNCHANGED)  — does the actual work
+    ↓
+app/api/routes/decision.py  — repackages DecisionResult into the response schema
+    ↓
+HTTP response
+```
+`decision_service.py` adds `ml/` to `sys.path` and imports `decision_engine`
+the same way `tests/test_decision_engine.py` already did — no logic is
+duplicated or reimplemented; the API calls the exact same `decide()`
+function Phase 3C's own tests call. `test_api_output_matches_direct_
+decision_engine_call` in the Phase 4 test suite verifies this directly, by
+calling the engine both ways for identical input and asserting the results
+match exactly.
+
+### Available endpoints
+
+- `GET /health` — unchanged since Phase 1, still returns `{"status": "ok", "phase": "1"}`
+- `GET /docs` — FastAPI's interactive docs, now also showing `/api/v1/decision`
+- `POST /api/v1/decision` — the new decision endpoint
+
+### Request format
+
+`DecisionRequest` (see `backend/app/schemas/decision.py`):
+
+| Field | Type | Notes |
+|---|---|---|
+| `transaction_id` | string, optional | passed through to the response/audit info |
+| `customer_id` | string, optional | passed through to the response/audit info |
+| `customer_type` | `"new"` \| `"existing"` | required |
+| `payment_method` | `"card"` \| `"upi"` \| `"netbanking"` \| `"wallet"` | required |
+| `merchant_category` | one of the 6 Phase 2 categories | required |
+| `customer_tenure_days` | float ≥ 0 | required |
+| `payment_amount` | float > 0 | required |
+| `previous_payment_count` | int ≥ 0 | required |
+| `previous_success_count` | int ≥ 0 | required |
+| `previous_failure_count` | int ≥ 0 | required |
+| `previous_retry_count` | int ≥ 0 | required |
+| `days_since_last_payment` | float ≥ 0 | required |
+| `constraints` | object, optional | see below |
+
+Field names deliberately match `ml.decision_engine.FEATURE_COLUMNS`
+exactly, so the service layer passes them through without renaming
+anything.
+
+`constraints` (optional, mirrors `MerchantConstraints`):
+```json
+{
+  "allowed_actions": ["do_nothing", "retry", "reminder"],
+  "max_retry_count": 3
+}
+```
+Both sub-fields are optional; omit `constraints` entirely for the engine's
+default (all four actions permitted, no retry limit).
+
+Beyond type/range checks, the request also rejects logically inconsistent
+history — `previous_success_count + previous_failure_count >
+previous_payment_count`, or `previous_retry_count > previous_payment_count`
+— the same consistency rules Phase 2's `validate_data.py` already enforces
+on the training data.
+
+### Response format
+
+`DecisionResponse` — everything the `DecisionResult` from Phase 3C already
+produces, reshaped into typed fields: `transaction_id`, `customer_id`,
+`selected_action`, `predicted_failure_risk`, `action_success_probabilities`
+(all four actions), `expected_revenue` (all four actions),
+`permitted_actions`, `constraints_applied`, `explanation`, `confidence`,
+and `causal_disclaimer` — the same disclaimer text from the Phase 3C audit
+record, restated on every single response so the causal-vs-observational
+distinction travels with the data rather than living only in this
+document.
+
+### How to start the server
+
+```powershell
+cd RevenueShield\backend
+pip install -r requirements.txt
+uvicorn app.main:app --reload
+```
+
+### How to test the API
+
+```powershell
+cd RevenueShield
+pytest tests\test_api_decision.py -v
+```
+or the full suite: `pytest`
+
+### Example API request
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/decision \
+  -H "Content-Type: application/json" \
+  -d '{
+    "transaction_id": "T1",
+    "customer_id": "C1",
+    "customer_type": "existing",
+    "payment_method": "card",
+    "merchant_category": "saas",
+    "customer_tenure_days": 240,
+    "payment_amount": 4999,
+    "previous_payment_count": 8,
+    "previous_success_count": 5,
+    "previous_failure_count": 3,
+    "previous_retry_count": 2,
+    "days_since_last_payment": 31
+  }'
+```
+
+### Example API response (real, from the actual running server)
+
+```json
+{
+    "transaction_id": "T1",
+    "customer_id": "C1",
+    "selected_action": "recovery_link",
+    "predicted_failure_risk": 0.2325396291334667,
+    "action_success_probabilities": {
+        "do_nothing": 0.6409923588751445,
+        "retry": 0.7570610820893593,
+        "reminder": 0.7982733119504528,
+        "recovery_link": 0.8850975511046759
+    },
+    "expected_revenue": {
+        "do_nothing": 3204.320802016847,
+        "retry": 3784.548349364707,
+        "reminder": 3990.5682864403134,
+        "recovery_link": 4424.602657972275
+    },
+    "permitted_actions": ["do_nothing", "retry", "reminder", "recovery_link"],
+    "constraints_applied": {
+        "allowed_actions": ["do_nothing", "recovery_link", "reminder", "retry"],
+        "max_retry_count": null,
+        "removed_by_constraint": {}
+    },
+    "explanation": "Send recovery link selected because it had the highest expected recovered revenue (Rs 4,424.60) among permitted actions, with a predicted success probability of 88.5%. Other permitted actions considered: Send reminder (Rs 3,990.57, 79.8% predicted success), Retry (Rs 3,784.55, 75.7% predicted success), Do nothing (Rs 3,204.32, 64.1% predicted success). Predicted payment failure risk before any action: 23.3%.",
+    "confidence": {
+        "level": "standard",
+        "basis": "Sufficient payment history available (8 prior payments).",
+        "method": "Heuristic proxy based on previous_payment_count \u2014 NOT a statistically derived confidence interval. See README.md's Phase 3C section for why."
+    },
+    "causal_disclaimer": "action_success_probabilities are observational predictions P(success | features, action was taken), estimated from synthetic historical data where action assignment was itself risk-biased. They are NOT validated causal treatment effects."
+}
+```
+
+### Important limitations
+
+- No database — nothing persists between requests; the audit record is
+  returned in the response, not stored anywhere.
+- No authentication — this API has no access control and should not be
+  exposed publicly as-is.
+- No Razorpay integration, no real payment processing, no webhooks.
+- No frontend — this is an API only, tested via `curl`/`pytest`/`/docs`.
+- Same causal-interpretation limitation as Phase 3B/3C: `action_success_
+  probabilities` are observational predictions, not validated causal
+  treatment effects — see the `causal_disclaimer` field on every response
+  and Section 14's "Limitations of observational action-outcome models".
+- `backend/requirements.txt` now includes `ml/requirements.txt` via a `-r`
+  reference (rather than duplicating the pins) because the API needs
+  pandas/numpy/scikit-learn/joblib to load the Phase 3A/3B models — this is
+  a wiring change, not a new dependency.

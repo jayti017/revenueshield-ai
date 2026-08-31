@@ -1,8 +1,13 @@
-# Phase 1 — minimal foundation dependencies only.
-# ML libraries (pandas, numpy, scikit-learn, xgboost/lightgbm, shap) are
-# deliberately NOT listed here — they belong to a later phase when model
-# work actually begins.
+# Phase 4 note: the decision API (backend/app/api/routes/decision.py) calls
+# into the existing ml/decision_engine.py, which needs pandas/numpy/
+# scikit-learn/joblib to load the Phase 3A/3B model artifacts. Rather than
+# duplicate those version pins here (and risk them drifting out of sync),
+# this file includes ml/requirements.txt directly — pip resolves -r paths
+# relative to this file, so this works regardless of the working directory
+# `pip install` is run from. No new libraries were added for Phase 4 itself.
+-r ../ml/requirements.txt
 
+# Phase 1 — minimal foundation dependencies only.
 fastapi==0.115.6
 uvicorn[standard]==0.32.1
 pydantic==2.10.3
