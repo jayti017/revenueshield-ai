@@ -4,12 +4,19 @@ RevenueShield AI — Phase 4: Decision API route.
 POST /api/v1/decision — accepts payment/customer features, calls the
 EXISTING Phase 3C decision engine (via app/services/decision_service.py),
 and returns its output. Contains no decision-making logic of its own.
+
+Phase 5 addition: after a successful decision, the audit record is also
+persisted (best-effort — see _persist_audit_record below). The request
+schema and response shape are otherwise unchanged from Phase 4.
 """
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, HTTPException
 
+from app.db.audit_repository import save_audit_record
 from app.schemas.decision import (
     ConfidenceResponse,
     ConstraintsAppliedResponse,
@@ -18,7 +25,21 @@ from app.schemas.decision import (
 )
 from app.services.decision_service import run_decision
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/v1", tags=["decision"])
+
+
+def _persist_audit_record(audit: dict) -> None:
+    """Best-effort persistence: a database failure here must never break
+    the POST /api/v1/decision response, which is already fully computed by
+    the time this is called. Logs a warning and moves on rather than
+    raising.
+    """
+    try:
+        save_audit_record(audit)
+    except Exception:
+        logger.warning("Failed to persist audit record for transaction_id=%r", audit.get("transaction_id"), exc_info=True)
 
 
 @router.post("/decision", response_model=DecisionResponse)
@@ -48,6 +69,7 @@ def post_decision(request: DecisionRequest) -> DecisionResponse:
         ) from exc
 
     audit = result.audit_record
+    _persist_audit_record(audit)
 
     return DecisionResponse(
         transaction_id=audit["transaction_id"],

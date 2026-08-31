@@ -1,0 +1,42 @@
+{
+  "n_transactions": 7617,
+  "total_scheduled_revenue": 19176423.34999994,
+  "policies": {
+    "default_merchant_strategy": {
+      "is_fully_real": true,
+      "total_revenue": 15713474.47999998
+    },
+    "always_retry": {
+      "is_fully_real": false,
+      "total_direct_expected_revenue": 15640816.363505939,
+      "realized_overlap": {
+        "n_overlap_rows": 1876,
+        "overlap_rate": 0.24629119075751607,
+        "realized_total": 3938684.3600000017
+      }
+    },
+    "random": {
+      "is_fully_real": false,
+      "total_direct_expected_revenue": 15744636.301164685,
+      "realized_overlap": {
+        "n_overlap_rows": 1876,
+        "overlap_rate": 0.24629119075751607,
+        "realized_total": 3749879.4399999934
+      }
+    },
+    "revenueshield": {
+      "is_fully_real": false,
+      "total_direct_expected_revenue": 16409619.450351296,
+      "realized_overlap": {
+        "n_overlap_rows": 2012,
+        "overlap_rate": 0.2641459892346068,
+        "realized_total": 4117504.099999997
+      }
+    }
+  },
+  "incremental_revenue_vs_default": {
+    "absolute": 696144.970351316,
+    "percent": 4.430242154511183,
+    "methodology_note": "Compares a MODEL-EXPECTED total (RevenueShield, direct-method estimate) against a REAL total (Default/Merchant strategy, actually collected). See this script's module docstring."
+  }
+}
