@@ -81,33 +81,24 @@ Outcome → stored → used in offline policy evaluation
 
 ## 8. Current Phase
 
-**Phase 4 — FastAPI Decision API.**
+**Phase 6 — Frontend (React + TypeScript + Tailwind).**
 
-Phase 1 (project foundation), Phase 2 (synthetic dataset), Phase 3A
-(payment failure risk model), Phase 3B (four action-outcome models), and
-Phase 3C (decision engine) are complete. Phase 4's only objective is a thin
-FastAPI layer exposing the existing Phase 3C decision engine over HTTP —
-`POST /api/v1/decision`. No decision-making logic was moved into the API;
-it calls the existing engine and returns what it produces. See the
-"Phase 4 — FastAPI Decision API" section near the end of this document for
-the full write-up.
+Phases 1–5 are complete and unchanged. Phase 6 adds a minimal frontend
+(`frontend/`) that consumes the existing Phase 4/5 API as-is — no backend
+code was modified. See the "Phase 6 — Frontend" section near the end of
+this document for the full write-up.
 
 **The following are explicitly NOT implemented yet:**
 
-- React frontend
-- dashboard
 - Razorpay integration
 - real payment processing
 - production authentication
-- database persistence
 - payment webhooks
 - notification systems
-- offline policy evaluation against baselines (Random / Always Retry / Default strategy)
+- production frontend deployment/build serving
 
 ## 9. Future Development Phases (indicative, not commitments)
 
-- **Phase 5:** Offline policy evaluation (RevenueShield vs. Random / Always Retry / Default strategy), audit-trail storage, and the incremental-revenue business metric
-- **Phase 6:** Frontend (dashboard, individual decision screen)
 - **Phase 7:** Razorpay Test Mode integration
 
 ## 10. Windows Setup Instructions
@@ -183,16 +174,23 @@ RevenueShield/
 ├── backend/
 │   ├── app/
 │   │   ├── __init__.py
-│   │   ├── main.py          # FastAPI app: /health + includes the decision router
+│   │   ├── main.py          # FastAPI app: /health + decision router + audit router
 │   │   ├── api/
 │   │   │   └── routes/
-│   │   │       └── decision.py   # Phase 4: POST /api/v1/decision (calls the service layer only)
+│   │   │       ├── decision.py   # Phase 4: POST /api/v1/decision (+ Phase 5: persists the audit record)
+│   │   │       └── audit.py      # Phase 5: GET /api/v1/decisions, GET /api/v1/decisions/{transaction_id}
+│   │   ├── db/
+│   │   │   ├── database.py           # Phase 5: SQLite connection + schema
+│   │   │   └── audit_repository.py   # Phase 5: save/list/get audit records
 │   │   ├── models/           # empty — unused so far
 │   │   ├── services/
 │   │   │   └── decision_service.py  # Phase 4: thin wrapper calling ml/decision_engine.decide()
 │   │   ├── schemas/
-│   │   │   └── decision.py   # Phase 4: Pydantic request/response models
+│   │   │   ├── decision.py   # Phase 4: Pydantic request/response models
+│   │   │   └── audit.py      # Phase 5: audit-record response models (reuses decision.py's types)
 │   │   └── utils/            # empty — unused so far
+│   ├── data/
+│   │   └── audit.db          # Phase 5: generated on first use, not committed (see .gitignore)
 │   ├── .env.example
 │   └── requirements.txt      # includes -r ../ml/requirements.txt — see Phase 4 section
 ├── ml/
@@ -202,7 +200,8 @@ RevenueShield/
 │   ├── evaluate_risk_model.py # Phase 3A: evaluates it on val/test/cold-start
 │   ├── train_action_models.py    # Phase 3B: trains 4 per-action outcome models
 │   ├── evaluate_action_models.py # Phase 3B: evaluates each on val/test/cold-start
-│   ├── decision_engine.py        # Phase 3C: combines models into a decision + explanation + audit record
+│   ├── decision_engine.py        # Phase 3C: combines models into a decision + explanation + audit record (UNCHANGED in Phase 5)
+│   ├── evaluate_policy.py        # Phase 5: offline policy evaluation vs. baselines
 │   ├── requirements.txt       # pandas, numpy, scikit-learn, joblib — exact-pinned, no XGBoost/SHAP/etc.
 │   ├── data/
 │   │   ├── raw/
@@ -212,19 +211,23 @@ RevenueShield/
 │   │       ├── validation.csv          # generated, not committed
 │   │       ├── test.csv                # generated, not committed
 │   │       └── cold_start.csv          # generated, not committed
-│   └── models/
-│       ├── risk_model.joblib              # generated, not committed
-│       ├── action_model_do_nothing.joblib     # generated, not committed
-│       ├── action_model_retry.joblib          # generated, not committed
-│       ├── action_model_reminder.joblib       # generated, not committed
-│       └── action_model_recovery_link.joblib  # generated, not committed
+│   ├── models/
+│   │   ├── risk_model.joblib              # generated, not committed
+│   │   ├── action_model_do_nothing.joblib     # generated, not committed
+│   │   ├── action_model_retry.joblib          # generated, not committed
+│   │   ├── action_model_reminder.joblib       # generated, not committed
+│   │   └── action_model_recovery_link.joblib  # generated, not committed
+│   └── reports/
+│       └── policy_evaluation.json    # Phase 5: generated by evaluate_policy.py, not committed
 ├── frontend/                  # empty — not built yet
 ├── tests/
 │   ├── __init__.py
-│   ├── conftest.py             # makes backend/app importable from project root
-│   ├── test_health.py          # Phase 1
-│   ├── test_decision_engine.py # Phase 3C
-│   └── test_api_decision.py    # Phase 4
+│   ├── conftest.py               # makes backend/app importable + isolates the audit DB for the whole suite (Phase 5)
+│   ├── test_health.py            # Phase 1
+│   ├── test_decision_engine.py   # Phase 3C
+│   ├── test_api_decision.py      # Phase 4
+│   ├── test_audit_persistence.py # Phase 5
+│   └── test_policy_evaluation.py # Phase 5
 ├── docs/
 ├── .gitignore
 └── README.md
@@ -963,3 +966,227 @@ curl -X POST http://127.0.0.1:8000/api/v1/decision \
   reference (rather than duplicating the pins) because the API needs
   pandas/numpy/scikit-learn/joblib to load the Phase 3A/3B models — this is
   a wiring change, not a new dependency.
+
+## 17. Phase 5 — Audit-Trail Persistence & Offline Policy Evaluation
+
+### Audit-trail persistence
+
+Every `POST /api/v1/decision` call now also persists its audit record to a
+local SQLite database (`backend/data/audit.db`, created automatically on
+first use — nothing to run manually). This is implemented with Python's
+standard-library `sqlite3` only — no ORM, no PostgreSQL/MongoDB/Redis. The
+request schema and response shape of `POST /api/v1/decision` are byte-for-
+byte unchanged from Phase 4; persistence is a side effect after the
+response is already fully computed, and it's **best-effort**: if the write
+fails, a warning is logged and the API still returns its normal 200
+response — a database problem should never turn into a decision-API
+outage. `test_database_write_failure_does_not_break_decision_response`
+verifies this by monkeypatching the save call to raise and confirming the
+endpoint still returns 200.
+
+### GET /api/v1/decisions
+
+Returns recently persisted decisions, most-recent-first, bounded by a
+`limit` query parameter (default 50, max 500):
+```
+GET /api/v1/decisions?limit=10
+```
+
+### GET /api/v1/decisions/{transaction_id}
+
+Returns the stored audit record for one transaction, or `404` if nothing
+was ever persisted under that id:
+```
+GET /api/v1/decisions/T1
+```
+
+Both endpoints reuse `ConfidenceResponse`/`ConstraintsAppliedResponse`/
+`Action` from `schemas/decision.py` (see `schemas/audit.py`) rather than
+redefining the same shapes twice — a stored record has exactly the same
+fields as a live decision response, plus `id` and `created_at`.
+
+### Offline policy evaluation
+
+`ml/evaluate_policy.py` compares RevenueShield's policy against three
+baselines on `ml/data/processed/test.csv` — the Phase 2 held-out set,
+never used to train any model. It calls the real, unmodified
+`ml.decision_engine.decide()` per row; it does not reimplement or retrain
+anything.
+
+**Baselines:**
+- **Default / Merchant strategy** — the action actually recorded in the
+  data and its real outcome. This is "what already happens."
+- **Always Retry** — always choose `retry`.
+- **Random** — choose uniformly at random among the four actions (fixed
+  seed, so results are reproducible run to run).
+
+### Methodology and caveats — read this before trusting the incremental-revenue number
+
+We can only ever observe the real outcome of the action that was actually
+taken for a given historical transaction — never what would have happened
+under a different action. So:
+
+- **Default / Merchant strategy is a fully REAL total** — the sum of
+  amounts actually collected under the action that was actually used. No
+  model is involved in computing it at all, by construction (verified by
+  `test_default_baseline_is_never_model_derived`, which checks this holds
+  regardless of what any model would have predicted for the same row).
+- **Always Retry, Random, and RevenueShield each report a MODEL-EXPECTED
+  total** — `payment_amount × ` the relevant Phase 3B action model's
+  predicted success probability for whichever action that policy would
+  have chosen. This is the standard "direct method" off-policy evaluation
+  estimator — not an observed outcome — and it inherits every limitation
+  of the Phase 3B models it depends on (see Section 14, especially the
+  documented cold-start weakness).
+- For rows where a policy's chosen action happens to match the actually-
+  recorded historical action, the script **also** reports a real,
+  non-model-based "realized" total for just that overlap subset — a
+  smaller sample, but grounded in real data rather than a prediction.
+
+**Comparing a real total (Default) against model-expected totals (the
+other three) is apples-to-oranges in a specific, named way**: it answers
+"what would we expect to collect under this policy," not "what would we
+actually have collected." The incremental-revenue figure inherits this
+caveat and restates it in the script's own output — it is never presented
+as a clean number without that context.
+
+The script also never lets `payment_success`, `payment_status`,
+`failure_reason`, `amount_recovered`, or `action` reach a model as an
+input feature — only `ml.decision_engine.FEATURE_COLUMNS` (the same 10
+pre-outcome features Phase 3A/3B were trained on) are used for prediction;
+the outcome columns are read only to compute the real/realized figures
+above.
+
+### Incremental-revenue metric — actual results from this project's data
+
+**Fast mode (500-row sample, seed 42):** RevenueShield model-expected total
+₹10,77,834.58 vs. Default real total ₹9,75,733.43 → **+₹1,02,101.15
+(+10.46%)**.
+
+**Full test set (7,617 rows, seed 42, ~169s runtime):** RevenueShield
+model-expected total ₹1,64,09,619.45 vs. Default real total
+₹1,57,13,474.48 → **+₹6,96,144.97 (+4.43%)**.
+
+The sample and full-set percentages differ (10.46% vs. 4.43%) — that's
+ordinary sample variance from evaluating 500 randomly-drawn rows vs. the
+complete 7,617, not a bug; it's exactly why `--full` exists as an option
+rather than the sample being treated as sufficient on its own.
+
+### Commands
+
+Default (fast) mode — for development, ~13s for 500 rows:
+```powershell
+python ml/evaluate_policy.py
+```
+
+A different sample size:
+```powershell
+python ml/evaluate_policy.py --sample-size 100
+```
+
+Complete held-out test set — slower (~169s / ~3 minutes on this project's
+hardware) because it calls the real Phase 3C decision engine once per row
+rather than a fast reimplementation; documented in the script's own
+`--help` text and module docstring, not just here:
+```powershell
+python ml/evaluate_policy.py --full
+```
+
+Every run prints a full report to the console and writes a machine-
+readable summary to `ml/reports/policy_evaluation.json` (overwritten each
+run — not an accumulating history; that's what the audit-trail database is
+for).
+
+### Phase 5 tests
+
+```powershell
+pytest tests\test_audit_persistence.py tests\test_policy_evaluation.py -v
+```
+or the full suite: `pytest`
+
+Every test in the suite — not just the two Phase 5 files — runs against an
+isolated temporary SQLite database, via an `autouse` fixture in
+`tests/conftest.py` that redirects `app.db.database.DEFAULT_DB_PATH` to a
+per-test temp file. This was made suite-wide rather than scoped to just
+`test_audit_persistence.py` because `POST /api/v1/decision` now persists
+as a side effect — without suite-wide isolation, the pre-existing Phase 4
+tests in `test_api_decision.py` (which know nothing about Phase 5) would
+silently write real rows into a developer's actual `backend/data/audit.db`
+every time the suite runs. This was caught and fixed during this phase's
+own validation, not assumed away.
+
+### Important limitations
+
+- No true causal/counterfactual off-policy evaluation (no inverse
+  propensity weighting, no doubly-robust estimator) — the direct-method
+  approach here is the same deliberately-simple choice this project has
+  made consistently since Phase 3B, not an oversight.
+- The audit database is local SQLite with no migrations tooling, no
+  concurrent-write hardening beyond SQLite's own locking, and no retention/
+  archival policy — appropriate for an MVP, not for production scale.
+- `GET /api/v1/decisions` has no filtering beyond `limit` (no date range,
+  no filter by `selected_action` or `customer_id`) — out of scope for this
+  phase.
+
+## 18. Phase 6 — Frontend (React + TypeScript + Tailwind)
+
+Minimal single-page frontend consuming the EXISTING Phase 4/5 API as-is —
+zero backend code changed. Two tabs: **New decision** (form → calls
+`POST /api/v1/decision`, renders the result: selected action, all four
+actions' probabilities/expected revenue as bars, explanation, confidence
+badge, causal disclaimer) and **Recent decisions** (calls
+`GET /api/v1/decisions`, click a row for detail via the same result
+component). A header badge pings `/health` on load.
+
+### How it connects to the backend
+
+Dev mode only: `vite.config.ts` proxies `/api/*` and `/health` to
+`http://127.0.0.1:8000`, so the browser only ever talks to the Vite origin
+— **no CORS changes were needed on the backend**, and none were made.
+
+### Files
+
+`frontend/{package.json,vite.config.ts,tsconfig*.json,tailwind.config.js,postcss.config.js,index.html}`,
+`frontend/src/{main.tsx,App.tsx,api.ts,types.ts,index.css}`,
+`frontend/src/components/{DecisionForm,DecisionResultCard,DecisionHistory}.tsx`.
+
+### Dependencies
+
+New: `frontend/package.json` (react, react-dom, vite, @vitejs/plugin-react,
+typescript, tailwindcss, postcss, autoprefixer — the minimal set for
+"React + TypeScript + Tailwind," nothing extra; no chart library, no
+router, no state-management library). No backend dependency changed.
+
+### Commands
+
+```powershell
+cd frontend
+npm install
+npm run build
+npm run dev
+```
+Run the backend separately (`cd backend && uvicorn app.main:app --reload`)
+before `npm run dev`, since the dev server proxies to it.
+
+### Verified
+
+`npm run build` compiles cleanly (TypeScript + Vite, 0 errors). End-to-end:
+real backend + real `vite` dev server, `POST /api/v1/decision` and
+`GET /api/v1/decisions` both round-tripped correctly through the proxy.
+
+### Tests
+
+No JS test framework was added (would be a new, otherwise-unneeded
+dependency). `npm run build` is the real Phase 6 check — it fails loudly on
+any type/shape mismatch. On the Python side,
+`tests/test_phase6_frontend_contract.py` asserts the live API still
+returns exactly the field names `frontend/src/types.ts` hard-codes, so a
+future backend change that breaks the frontend contract is still caught by
+`pytest` alone. Full suite: **43 passed** (40 from Phases 1–5, unchanged +
+3 new).
+
+### Limitations
+
+Dev-mode proxy only — no production static-file serving/build deployment
+configured; no auth; no routing library (two tabs via local state); no
+charts library (bars via Tailwind width %).
