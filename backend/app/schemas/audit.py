@@ -13,7 +13,7 @@ from typing import Optional
 
 from pydantic import BaseModel
 
-from app.schemas.decision import Action, ConfidenceResponse, ConstraintsAppliedResponse
+from app.schemas.decision import Action, ConfidenceResponse, ConstraintsAppliedResponse, SafetyInfoResponse
 
 
 class AuditRecordResponse(BaseModel):
@@ -32,6 +32,7 @@ class AuditRecordResponse(BaseModel):
     explanation: str
     confidence: ConfidenceResponse
     causal_disclaimer: str
+    safety: SafetyInfoResponse
 
 
 class AuditRecordListResponse(BaseModel):

@@ -8,6 +8,9 @@ called via app/services/decision_service.py.
 
 Field names deliberately match ml/decision_engine.FEATURE_COLUMNS exactly,
 so the service layer can pass them through without renaming.
+
+Phase 7 addition: SafetyInfoResponse + the optional `safety` field on
+DecisionResponse. Additive only — every existing field is unchanged.
 """
 
 from __future__ import annotations
@@ -83,6 +86,16 @@ class ConstraintsAppliedResponse(BaseModel):
     removed_by_constraint: dict[str, str]
 
 
+class SafetyInfoResponse(BaseModel):
+    """Phase 7: mirrors ml.safety_layer's safety_info dict exactly."""
+
+    triggered: bool
+    reasons: list[str]
+    original_selected_action: Action
+    final_selected_action: Action
+    overridden: bool
+
+
 class DecisionResponse(BaseModel):
     transaction_id: Optional[str]
     customer_id: Optional[str]
@@ -100,3 +113,9 @@ class DecisionResponse(BaseModel):
     # ml/decision_engine.py and README.md's Phase 3B/4 sections for why
     # this distinction matters.
     causal_disclaimer: str
+
+    # Phase 7: additive field. Always present (never omitted), but
+    # `triggered` is False and `original_selected_action ==
+    # final_selected_action` for the normal case — see README's Phase 7
+    # section.
+    safety: SafetyInfoResponse

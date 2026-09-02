@@ -81,12 +81,12 @@ Outcome → stored → used in offline policy evaluation
 
 ## 8. Current Phase
 
-**Phase 6 — Frontend (React + TypeScript + Tailwind).**
+**Phase 7 — Safety & Robustness Layer.**
 
-Phases 1–5 are complete and unchanged. Phase 6 adds a minimal frontend
-(`frontend/`) that consumes the existing Phase 4/5 API as-is — no backend
-code was modified. See the "Phase 6 — Frontend" section near the end of
-this document for the full write-up.
+Phases 1–6 are complete and unchanged. Phase 7 adds a small, isolated
+safety layer (`ml/safety_layer.py`) on top of the unmodified Phase 3C
+decision engine. See the "Phase 7 — Safety & Robustness Layer" section
+near the end of this document for the full write-up.
 
 **The following are explicitly NOT implemented yet:**
 
@@ -99,7 +99,7 @@ this document for the full write-up.
 
 ## 9. Future Development Phases (indicative, not commitments)
 
-- **Phase 7:** Razorpay Test Mode integration
+- **Phase 8:** Razorpay Test Mode integration
 
 ## 10. Windows Setup Instructions
 
@@ -1190,3 +1190,93 @@ future backend change that breaks the frontend contract is still caught by
 Dev-mode proxy only — no production static-file serving/build deployment
 configured; no auth; no routing library (two tabs via local state); no
 charts library (bars via Tailwind width %).
+
+## 19. Phase 7 — Safety & Robustness Layer
+
+A small, isolated module (`ml/safety_layer.py`) wraps the existing,
+**unmodified** Phase 3C decision engine (`ml/decision_engine.py`). It adds
+no new prediction, expected-revenue, or constraint logic of its own —
+everything is computed by calling `decide()` exactly as before, then a
+thin layer decides whether a conservative override is warranted.
+
+### What was added
+
+**Four safety triggers**, each independently documented and testable:
+
+1. **Low confidence** — the engine's own confidence label (`"low"`) now
+   actually does something. Previously it was informational only.
+2. **High risk + uncertain confidence** — predicted failure risk ≥ 0.90
+   combined with anything less than `"standard"` confidence. High risk
+   alone, with standard confidence, is **not** overridden — that's
+   RevenueShield's core use case, not something to be cautious about.
+3. **Out-of-trained-range payment amount** — outside `[₹49, ₹200,000]`,
+   the exact clip bounds `ml/generate_data.py`'s own generator uses, so the
+   models genuinely have no training signal there.
+4. **Retry fatigue** — `previous_retry_count ≥ 3` (reusing
+   `generate_data.py`'s own `FATIGUE_RETRY_THRESHOLD`, not an invented
+   number) **and** the engine's own pick is `retry` again. This is a
+   trigger evaluated after the fact, not a constraint injected beforehand
+   — `permitted_actions` is always exactly what `decision_engine.decide()`
+   itself would produce for the same `MerchantConstraints`; the safety
+   layer never adds, removes, or defaults a constraint on its own. An
+   explicit merchant `max_retry_count` works completely unaffected by this
+   layer, in either direction.
+
+**Fallback, when triggered:** the least customer-intrusive action still in
+`permitted_actions`, using the engine's own existing `ACTION_PRIORITY`
+ordering (`do_nothing → retry → reminder → recovery_link`) — never a
+second, separately-invented priority list. Structurally guaranteed to
+respect `permitted_actions`, since it only ever selects from that list.
+
+**Defensive input validation** (`SafetyValidationError`, a `ValueError`
+subclass) — catches missing fields, non-finite values (NaN/Inf), negative
+where invalid, and inconsistent historical counts *before* they reach a
+model. The HTTP API already validates these via Pydantic; this is
+defense-in-depth for any direct caller of `safe_decide()`/`decide()` that
+bypasses the API (scripts, notebooks).
+
+**Regression guarantee:** when no trigger fires, `safe_decide()`'s output
+is byte-for-byte equivalent to calling `decide()` directly — same action,
+same numbers, same explanation text. Enforced by
+`test_regression_untriggered_case_matches_decide_directly`.
+
+### API / persistence changes (additive only)
+
+`DecisionResponse` and `AuditRecordResponse` gain one new field, `safety`:
+```json
+"safety": {
+  "triggered": false,
+  "reasons": [],
+  "original_selected_action": "recovery_link",
+  "final_selected_action": "recovery_link",
+  "overridden": false
+}
+```
+No existing field changed. `backend/app/db/database.py` adds a
+`safety_info` column via a safe, idempotent `ALTER TABLE` (checked against
+`PRAGMA table_info` first) — **an existing local `audit.db` from Phase 5/6
+continues to work**; old rows read back with an explicit
+`"no_safety_evaluation_recorded (row predates Phase 7)"` note rather than
+a fabricated `triggered: false`. `frontend/` was not modified — the new
+field is inert JSON the existing UI simply doesn't read.
+
+### Files
+
+New: `ml/safety_layer.py`, `tests/test_safety_layer.py`.
+Modified: `backend/app/schemas/decision.py`, `backend/app/schemas/audit.py`,
+`backend/app/services/decision_service.py`,
+`backend/app/api/routes/decision.py`, `backend/app/db/database.py`,
+`backend/app/db/audit_repository.py`, `tests/test_phase6_frontend_contract.py`,
+`tests/test_audit_persistence.py` (both: added `"safety"` to an existing
+exact-match field assertion — a necessary, minimal consequence of the
+additive schema change, not a behavior change).
+
+### Tests
+
+```powershell
+pytest tests\test_safety_layer.py -v
+pytest
+```
+**70 passed** (43 unchanged from Phases 1–6 + 27 new). No live services, no
+new dependencies — only Python 3.11-compatible standard library plus
+what's already in `backend/requirements.txt`.

@@ -41,10 +41,27 @@ CREATE TABLE IF NOT EXISTS audit_records (
 
 _INDEX = "CREATE INDEX IF NOT EXISTS idx_audit_records_transaction_id ON audit_records (transaction_id);"
 
+# Phase 7: added alongside the existing columns above. New installs get it
+# via _SCHEMA's CREATE TABLE; databases created before Phase 7 (Phase 5/6)
+# need it added in place — SQLite has no "ADD COLUMN IF NOT EXISTS", so
+# _ensure_safety_info_column checks PRAGMA table_info first and only runs
+# ALTER TABLE when the column is actually missing. Nullable + no default
+# requirement, so existing rows are unaffected (they simply read back as
+# NULL for this column).
+_SAFETY_INFO_COLUMN = "safety_info"
+
+
+def _ensure_safety_info_column(conn: sqlite3.Connection) -> None:
+    existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(audit_records)").fetchall()}
+    if _SAFETY_INFO_COLUMN not in existing_columns:
+        conn.execute(f"ALTER TABLE audit_records ADD COLUMN {_SAFETY_INFO_COLUMN} TEXT")
+
 
 def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
     """Opens a fresh connection to the given (or default) database file,
-    creating the parent directory and schema if they don't exist yet.
+    creating the parent directory and schema if they don't exist yet, and
+    migrating in the Phase 7 safety_info column if this is a database
+    created before Phase 7.
 
     `db_path=None` resolves DEFAULT_DB_PATH at call time (not import time),
     which is what lets tests monkeypatch it per-test for isolation.
@@ -56,4 +73,6 @@ def get_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute(_SCHEMA)
     conn.execute(_INDEX)
+    _ensure_safety_info_column(conn)
     return conn
+

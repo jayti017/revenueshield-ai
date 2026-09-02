@@ -12,6 +12,11 @@ names frontend/src/types.ts hard-codes are still present in the live API
 responses, so a future backend change that silently renames/removes a
 field used by the frontend is still caught by `pytest` even without
 running the frontend at all.
+
+Phase 7 note: DECISION_RESPONSE_FIELDS now includes "safety" — an
+additive field (see ml/safety_layer.py, backend/app/schemas/decision.py).
+frontend/ was NOT modified for this; the added field is inert JSON the
+existing frontend simply doesn't read.
 """
 
 from __future__ import annotations
@@ -45,6 +50,7 @@ DECISION_RESPONSE_FIELDS = {
     "transaction_id", "customer_id", "selected_action", "predicted_failure_risk",
     "action_success_probabilities", "expected_revenue", "permitted_actions",
     "constraints_applied", "explanation", "confidence", "causal_disclaimer",
+    "safety",  # Phase 7: additive field
 }
 CONSTRAINTS_APPLIED_FIELDS = {"allowed_actions", "max_retry_count", "removed_by_constraint"}
 CONFIDENCE_FIELDS = {"level", "basis", "method"}

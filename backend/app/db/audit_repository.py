@@ -4,8 +4,14 @@ RevenueShield AI — Phase 5: audit-record persistence.
 Reads and writes the audit_records table (schema owned by database.py).
 Contains storage logic only — never decision-making logic. Records arriving
 here are already fully computed dicts, shaped exactly like
-ml.decision_engine.DecisionResult.audit_record, by the time they reach
-save_audit_record().
+ml.decision_engine.DecisionResult.audit_record (Phase 7: now
+ml.safety_layer.SafeDecisionResult.audit_record, which is the same dict
+shape plus a "safety" key), by the time they reach save_audit_record().
+
+Phase 7: persists/reads the safety_info column added by database.py's
+migration. Rows written before Phase 7 have safety_info = NULL; those are
+read back with a clearly-labeled placeholder (see _row_to_dict) rather than
+crashing or fabricating a fake "no trigger fired" claim.
 """
 
 from __future__ import annotations
@@ -36,8 +42,8 @@ def save_audit_record(record: dict[str, Any], db_path: Optional[Path] = None) ->
                 created_at, transaction_id, customer_id, selected_action,
                 predicted_failure_risk, action_success_probabilities,
                 expected_revenue, permitted_actions, constraints_applied,
-                explanation, confidence, causal_disclaimer
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                explanation, confidence, causal_disclaimer, safety_info
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 datetime.now(timezone.utc).isoformat(),
@@ -55,6 +61,10 @@ def save_audit_record(record: dict[str, Any], db_path: Optional[Path] = None) ->
                 record["reason"],
                 json.dumps(record["confidence"]),
                 record["causal_disclaimer"],
+                # Phase 7: "safety" is present on every record produced by
+                # ml.safety_layer.safe_decide(); None only for a caller that
+                # somehow bypassed it entirely (defensive, not expected).
+                json.dumps(record["safety"]) if record.get("safety") is not None else None,
             ),
         )
         conn.commit()
@@ -64,6 +74,24 @@ def save_audit_record(record: dict[str, Any], db_path: Optional[Path] = None) ->
 
 
 def _row_to_dict(row: Any) -> dict[str, Any]:
+    raw_safety_info = row["safety_info"] if "safety_info" in row.keys() else None
+    if raw_safety_info is not None:
+        safety = json.loads(raw_safety_info)
+    else:
+        # Pre-Phase-7 row (or a caller that bypassed safety_layer): no
+        # safety evaluation was ever recorded for it. Rather than silently
+        # claiming "triggered": False (which would be fabricating a result
+        # that was never actually computed), original/final both echo the
+        # stored selected_action and reasons is left empty with an explicit
+        # note.
+        safety = {
+            "triggered": False,
+            "reasons": ["no_safety_evaluation_recorded (row predates Phase 7)"],
+            "original_selected_action": row["selected_action"],
+            "final_selected_action": row["selected_action"],
+            "overridden": False,
+        }
+
     return {
         "id": row["id"],
         "created_at": row["created_at"],
@@ -78,6 +106,7 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
         "explanation": row["explanation"],
         "confidence": json.loads(row["confidence"]),
         "causal_disclaimer": row["causal_disclaimer"],
+        "safety": safety,
     }
 
 

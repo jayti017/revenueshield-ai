@@ -2,12 +2,16 @@
 RevenueShield AI — Phase 4: Decision API route.
 
 POST /api/v1/decision — accepts payment/customer features, calls the
-EXISTING Phase 3C decision engine (via app/services/decision_service.py),
-and returns its output. Contains no decision-making logic of its own.
+decision layer (via app/services/decision_service.py), and returns its
+output. Contains no decision-making logic of its own.
 
 Phase 5 addition: after a successful decision, the audit record is also
-persisted (best-effort — see _persist_audit_record below). The request
-schema and response shape are otherwise unchanged from Phase 4.
+persisted (best-effort — see _persist_audit_record below).
+
+Phase 7 addition: decision_service.run_decision() now goes through
+ml.safety_layer.safe_decide() (ml/decision_engine.py itself is unchanged);
+the response gains one new additive field, `safety`. Everything else about
+the request schema and response shape is unchanged from Phase 4.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from app.schemas.decision import (
     ConstraintsAppliedResponse,
     DecisionRequest,
     DecisionResponse,
+    SafetyInfoResponse,
 )
 from app.services.decision_service import run_decision
 
@@ -58,9 +63,11 @@ def post_decision(request: DecisionRequest) -> DecisionResponse:
             ),
         ) from exc
     except ValueError as exc:
-        # e.g. a feature the engine needs wasn't provided — shouldn't happen
-        # given DecisionRequest's validation, but handled explicitly rather
-        # than leaking a raw traceback if it ever does.
+        # e.g. a feature the engine needs wasn't provided, or Phase 7's
+        # safety_layer rejected an unsafe input (SafetyValidationError is a
+        # ValueError subclass) — shouldn't happen given DecisionRequest's
+        # own validation, but handled explicitly rather than leaking a raw
+        # traceback if it ever does.
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001 — deliberately broad: last resort
         raise HTTPException(
@@ -83,4 +90,5 @@ def post_decision(request: DecisionRequest) -> DecisionResponse:
         explanation=result.explanation,
         confidence=ConfidenceResponse(**result.confidence),
         causal_disclaimer=audit["causal_disclaimer"],
+        safety=SafetyInfoResponse(**result.safety),
     )

@@ -129,6 +129,11 @@ def test_health_endpoint_unchanged():
 
 # 8 — existing POST /api/v1/decision response shape unchanged
 def test_decision_response_shape_unchanged():
+    """"Unchanged" as of Phase 7 means: every Phase 4/5 field is still
+    present with the same meaning, plus the new additive `safety` field
+    (see ml/safety_layer.py) — not that the shape is byte-identical to
+    Phase 5, which would contradict Phase 7's explicit, additive extension.
+    """
     _require_models()
     response = client.post("/api/v1/decision", json=EXISTING_CUSTOMER_PAYLOAD)
     assert response.status_code == 200
@@ -139,5 +144,6 @@ def test_decision_response_shape_unchanged():
         "predicted_failure_risk", "action_success_probabilities",
         "expected_revenue", "permitted_actions", "constraints_applied",
         "explanation", "confidence", "causal_disclaimer",
+        "safety",  # Phase 7: additive field
     }
     assert set(body.keys()) == expected_keys

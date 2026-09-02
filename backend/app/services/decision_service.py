@@ -2,14 +2,18 @@
 RevenueShield AI — Phase 4: Decision service.
 
 Thin wrapper that translates between the API's Pydantic schemas and the
-EXISTING Phase 3C decision engine (ml/decision_engine.py). This file
-contains NO decision-making logic of its own — it only builds the feature
-dict decide() expects and converts constraints, then returns whatever the
-engine produces.
+decision layer. This file contains NO decision-making logic of its own —
+it only builds the feature dict and converts constraints, then returns
+whatever the underlying call produces.
 
-The engine lives outside backend/ (in ml/), so this module adds ml/ to
-sys.path the same way tests/test_decision_engine.py already does, rather
-than duplicating or reimplementing anything from Phase 3A/3B/3C.
+The decision layer lives outside backend/ (in ml/), so this module adds
+ml/ to sys.path the same way tests/test_decision_engine.py already does,
+rather than duplicating or reimplementing anything from Phase 3A/3B/3C.
+
+Phase 7: now calls ml.safety_layer.safe_decide() instead of
+ml.decision_engine.decide() directly. safety_layer wraps decide() without
+modifying it (ml/decision_engine.py is unchanged) — see
+ml/safety_layer.py's module docstring for exactly what it adds.
 """
 
 from __future__ import annotations
@@ -23,11 +27,12 @@ if str(ML_DIR) not in sys.path:
     sys.path.insert(0, str(ML_DIR))
 
 import decision_engine as de  # noqa: E402
+import safety_layer as sl  # noqa: E402
 
 
-def run_decision(request) -> "de.DecisionResult":
-    """Calls the existing decision engine with the request's features and
-    (optional) merchant constraints. `request` is a
+def run_decision(request) -> "sl.SafeDecisionResult":
+    """Calls the existing safety-layered decision function with the
+    request's features and (optional) merchant constraints. `request` is a
     app.schemas.decision.DecisionRequest — typed loosely here to avoid a
     circular import, since decision_service is imported by the route module
     that also imports the schema.
@@ -53,7 +58,7 @@ def run_decision(request) -> "de.DecisionResult":
             max_retry_count=request.constraints.max_retry_count,
         )
 
-    return de.decide(
+    return sl.safe_decide(
         features,
         constraints=constraints,
         transaction_id=request.transaction_id,
