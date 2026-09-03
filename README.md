@@ -81,7 +81,7 @@ Outcome → stored → used in offline policy evaluation
 
 ## 8. Current Phase
 
-**Phase 7 — Safety & Robustness Layer.**
+**Phase 8 — Razorpay Test Mode Integration (Batch 3).**
 
 Phases 1–6 are complete and unchanged. Phase 7 adds a small, isolated
 safety layer (`ml/safety_layer.py`) on top of the unmodified Phase 3C
@@ -90,12 +90,12 @@ near the end of this document for the full write-up.
 
 **The following are explicitly NOT implemented yet:**
 
-- Razorpay integration
-- real payment processing
 - production authentication
-- payment webhooks
 - notification systems
 - production frontend deployment/build serving
+
+Phase 8 is TEST MODE only. It includes Razorpay Checkout, server-side payment
+verification, and a signed webhook receiver with duplicate-event protection.
 
 ## 9. Future Development Phases (indicative, not commitments)
 
@@ -1280,3 +1280,149 @@ pytest
 **70 passed** (43 unchanged from Phases 1–6 + 27 new). No live services, no
 new dependencies — only Python 3.11-compatible standard library plus
 what's already in `backend/requirements.txt`.
+
+
+## 20. Phase 8 — Razorpay TEST-MODE Integration
+
+Phase 8 connects the existing RevenueShield decision/safety/audit pipeline to
+Razorpay Test Mode. No real-money credentials or payment processing are used
+by the application when TEST credentials are configured.
+
+### Flow
+
+```text
+React frontend
+    ↓
+POST /api/v1/payments/order
+    ↓
+Razorpay TEST order
+    ↓
+server-created Razorpay order_id becomes transaction_id
+    ↓
+RevenueShield decision service
+    ↓
+Safety layer
+    ↓
+Audit database + payment_orders table
+    ↓
+Razorpay Checkout.js
+    ↓
+POST /api/v1/payments/verify
+    ↓
+server fetches authoritative payment from Razorpay
+    ↓
+order / amount / currency / signature validation
+    ↓
+Frontend displays payment result + RevenueShield decision
+```
+
+### Backend files
+
+New:
+
+- `backend/app/api/routes/payments.py`
+- `backend/app/services/razorpay_client.py`
+- `backend/app/schemas/payment.py`
+- `backend/app/db/payment_repository.py`
+- `tests/test_payments.py`
+
+Modified:
+
+- `backend/app/main.py`
+- `backend/app/db/database.py`
+
+The Razorpay client uses the existing `httpx` dependency and Python's
+standard-library HMAC/SHA-256 implementation. The secret is read only on the
+server and is never returned to the frontend.
+
+### Frontend files
+
+New:
+
+- `frontend/src/components/TestPayment.tsx`
+
+Modified:
+
+- `frontend/index.html`
+- `frontend/src/App.tsx`
+- `frontend/src/api.ts`
+- `frontend/src/types.ts`
+- `frontend/src/components/DecisionForm.tsx`
+
+The UI adds a **Test payment** tab. It reuses the existing decision input
+form, creates a server-side Razorpay order, displays the RevenueShield
+recommendation, opens Razorpay Checkout, and then displays the verified
+payment result.
+
+### Configuration
+
+Create `backend/.env` locally (never commit it):
+
+```text
+RAZORPAY_KEY_ID=rzp_test_...
+RAZORPAY_KEY_SECRET=...
+```
+
+Only the public `RAZORPAY_KEY_ID` is sent to the browser.
+
+### Verification
+
+Run the Phase 8 tests:
+
+```powershell
+pytest tests\test_payments.py -v
+```
+
+Run the complete Python suite:
+
+```powershell
+pytest
+```
+
+The Phase 8 integration test suite covers order creation, transaction-id
+association, audit persistence, no-attempt checkout, successful payment,
+failed payment, invalid signatures, wrong-order payments, currency mismatch,
+and unknown orders.
+
+### Phase 8 limitations
+
+- Razorpay Checkout is TEST MODE only for this hackathon implementation.
+- The frontend uses Razorpay Checkout.js from the Razorpay CDN.
+- No production webhook/reconciliation system is included in this phase.
+- No live-mode credentials should be placed in the local `.env` for the demo.
+
+
+## Phase 8 — Razorpay Test Mode Integration
+
+### Batch 1
+Added Razorpay client helpers, payment-order persistence, and payment schemas.
+
+### Batch 2
+Added `/api/v1/payments/order` and `/api/v1/payments/verify`, Razorpay Checkout
+on the frontend, and payment integration tests.
+
+### Batch 3
+Added `/api/v1/payments/webhook`. The webhook receiver:
+
+- verifies `X-Razorpay-Signature` against the raw request body using
+  `RAZORPAY_WEBHOOK_SECRET`;
+- requires and stores `x-razorpay-event-id` for idempotency;
+- supports `payment.authorized`, `payment.captured`, `payment.failed`, and
+  `order.paid`;
+- updates the separate `payment_orders` table;
+- prevents an older/stale webhook from downgrading a captured/refunded state;
+- never recomputes or changes the original RevenueShield decision.
+
+For local/test setup, add the Test Mode webhook secret to `backend/.env`:
+
+```text
+RAZORPAY_WEBHOOK_SECRET=your_test_mode_webhook_secret
+```
+
+Razorpay webhook configuration should point to:
+
+```text
+POST /api/v1/payments/webhook
+```
+
+Only configure this endpoint for Razorpay Test Mode during this project phase.

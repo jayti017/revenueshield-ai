@@ -1,16 +1,14 @@
-// RevenueShield AI — Phase 6: top-level app.
-// Wires DecisionForm + DecisionResultCard + DecisionHistory together. No
-// decision logic here — every number displayed comes from the existing
-// Phase 3C engine via the existing Phase 4/5 API, called through api.ts.
+// RevenueShield AI — Phase 8 top-level app.
 
 import { useEffect, useState } from "react";
 import DecisionForm from "./components/DecisionForm";
 import DecisionResultCard from "./components/DecisionResultCard";
 import DecisionHistory from "./components/DecisionHistory";
+import TestPayment from "./components/TestPayment";
 import { checkHealth, postDecision } from "./api";
 import type { DecisionRequest, DecisionResponse } from "./types";
 
-type Tab = "new" | "history";
+type Tab = "new" | "payment" | "history";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("new");
@@ -29,6 +27,7 @@ export default function App() {
     setIsSubmitting(true);
     setError(null);
     setResult(null);
+
     try {
       const response = await postDecision(payload);
       setResult(response);
@@ -75,6 +74,16 @@ export default function App() {
           >
             New decision
           </button>
+
+          <button
+            onClick={() => setTab("payment")}
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
+              tab === "payment" ? "border-slate-900 text-slate-900" : "border-transparent text-slate-500"
+            }`}
+          >
+            Test payment
+          </button>
+
           <button
             onClick={() => setTab("history")}
             className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px ${
@@ -97,6 +106,7 @@ export default function App() {
           </div>
         )}
 
+        {tab === "payment" && <TestPayment />}
         {tab === "history" && <DecisionHistory />}
       </main>
     </div>

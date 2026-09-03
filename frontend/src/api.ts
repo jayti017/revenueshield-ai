@@ -1,11 +1,5 @@
-// RevenueShield AI — Phase 6 frontend API client.
-//
-// Thin fetch wrappers around the EXISTING Phase 4/5 endpoints. No decision
-// logic, no data transformation beyond JSON parsing — the backend's
-// response shape is used as-is (see types.ts). Requests go to relative
-// paths (/api/..., /health) so Vite's dev-server proxy (vite.config.ts)
-// forwards them to the FastAPI backend without any CORS configuration
-// needed on the backend.
+// RevenueShield AI — Phase 8 frontend API client.
+// Thin fetch wrappers around the FastAPI endpoints. No decision logic lives here.
 
 import type {
   AuditRecordListResponse,
@@ -13,6 +7,9 @@ import type {
   DecisionRequest,
   DecisionResponse,
   ApiError,
+  PaymentOrderResponse,
+  PaymentVerifyRequest,
+  PaymentVerifyResponse,
 } from "./types";
 
 async function parseErrorDetail(response: Response): Promise<string> {
@@ -20,7 +17,9 @@ async function parseErrorDetail(response: Response): Promise<string> {
     const body: ApiError = await response.json();
     if (typeof body.detail === "string") return body.detail;
     if (Array.isArray(body.detail)) {
-      return body.detail.map((e) => `${e.loc.join(".")}: ${e.msg}`).join("; ");
+      return body.detail
+        .map((e) => `${e.loc.join(".")}: ${e.msg}`)
+        .join("; ");
     }
     return `Request failed with status ${response.status}`;
   } catch {
@@ -54,6 +53,30 @@ export async function getDecisionByTransactionId(
   transactionId: string,
 ): Promise<AuditRecordResponse> {
   const response = await fetch(`/api/v1/decisions/${encodeURIComponent(transactionId)}`);
+  if (!response.ok) throw new Error(await parseErrorDetail(response));
+  return response.json();
+}
+
+export async function createPaymentOrder(
+  payload: DecisionRequest,
+): Promise<PaymentOrderResponse> {
+  const response = await fetch("/api/v1/payments/order", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) throw new Error(await parseErrorDetail(response));
+  return response.json();
+}
+
+export async function verifyPayment(
+  payload: PaymentVerifyRequest,
+): Promise<PaymentVerifyResponse> {
+  const response = await fetch("/api/v1/payments/verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
   if (!response.ok) throw new Error(await parseErrorDetail(response));
   return response.json();
 }

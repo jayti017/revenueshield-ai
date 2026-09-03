@@ -1,11 +1,14 @@
-// RevenueShield AI — Phase 6: new-decision form.
-// Collects exactly the fields DecisionRequest (backend/app/schemas/
-// decision.py) accepts. Client-side constraints mirror the API's own
-// validation (Pydantic still re-validates server-side — this is a UX
-// convenience, not a trust boundary).
+// RevenueShield AI — Phase 8: shared decision/payment input form.
+// Collects the same fields accepted by backend DecisionRequest.
 
 import { useState } from "react";
-import type { Action, CustomerType, DecisionRequest, MerchantCategory, PaymentMethod } from "../types";
+import type {
+  Action,
+  CustomerType,
+  DecisionRequest,
+  MerchantCategory,
+  PaymentMethod,
+} from "../types";
 import { ACTIONS, ACTION_LABELS } from "../types";
 
 const DEFAULT_FORM: DecisionRequest = {
@@ -26,9 +29,14 @@ const DEFAULT_FORM: DecisionRequest = {
 interface Props {
   onSubmit: (payload: DecisionRequest) => void;
   isSubmitting: boolean;
+  submitLabel?: string;
 }
 
-export default function DecisionForm({ onSubmit, isSubmitting }: Props) {
+export default function DecisionForm({
+  onSubmit,
+  isSubmitting,
+  submitLabel = "Get decision",
+}: Props) {
   const [form, setForm] = useState<DecisionRequest>(DEFAULT_FORM);
   const [allowedActions, setAllowedActions] = useState<Set<Action>>(new Set(ACTIONS));
   const [maxRetryCount, setMaxRetryCount] = useState<string>("");
@@ -57,6 +65,7 @@ export default function DecisionForm({ onSubmit, isSubmitting }: Props) {
 
     const allActionsAllowed = allowedActions.size === ACTIONS.length;
     const retryLimitSet = maxRetryCount !== "";
+
     if (!allActionsAllowed || retryLimitSet) {
       payload.constraints = {
         ...(allActionsAllowed ? {} : { allowed_actions: Array.from(allowedActions) }),
@@ -107,13 +116,10 @@ export default function DecisionForm({ onSubmit, isSubmitting }: Props) {
             value={form.customer_type}
             onChange={(e) => updateField("customer_type", e.target.value as CustomerType)}
           >
-            {customerTypes.map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
-            ))}
+            {customerTypes.map((t) => <option key={t} value={t}>{t}</option>)}
           </select>
         </div>
+
         <div>
           <label className="block text-sm text-slate-600 mb-1">Payment method</label>
           <select
@@ -121,11 +127,7 @@ export default function DecisionForm({ onSubmit, isSubmitting }: Props) {
             value={form.payment_method}
             onChange={(e) => updateField("payment_method", e.target.value as PaymentMethod)}
           >
-            {paymentMethods.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
+            {paymentMethods.map((m) => <option key={m} value={m}>{m}</option>)}
           </select>
         </div>
 
@@ -136,13 +138,10 @@ export default function DecisionForm({ onSubmit, isSubmitting }: Props) {
             value={form.merchant_category}
             onChange={(e) => updateField("merchant_category", e.target.value as MerchantCategory)}
           >
-            {merchantCategories.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
+            {merchantCategories.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
         </div>
+
         <div>
           <label className="block text-sm text-slate-600 mb-1">Payment amount (Rs)</label>
           <input
@@ -167,6 +166,7 @@ export default function DecisionForm({ onSubmit, isSubmitting }: Props) {
             required
           />
         </div>
+
         <div>
           <label className="block text-sm text-slate-600 mb-1">Days since last payment</label>
           <input
@@ -190,6 +190,7 @@ export default function DecisionForm({ onSubmit, isSubmitting }: Props) {
             required
           />
         </div>
+
         <div>
           <label className="block text-sm text-slate-600 mb-1">Previous retry count</label>
           <input
@@ -213,6 +214,7 @@ export default function DecisionForm({ onSubmit, isSubmitting }: Props) {
             required
           />
         </div>
+
         <div>
           <label className="block text-sm text-slate-600 mb-1">Previous failure count</label>
           <input
@@ -227,9 +229,7 @@ export default function DecisionForm({ onSubmit, isSubmitting }: Props) {
       </div>
 
       <fieldset className="border border-slate-200 rounded p-4">
-        <legend className="text-sm font-medium text-slate-700 px-1">
-          Merchant constraints (optional)
-        </legend>
+        <legend className="text-sm font-medium text-slate-700 px-1">Merchant constraints (optional)</legend>
         <div className="flex flex-wrap gap-4 mb-3">
           {ACTIONS.map((action) => (
             <label key={action} className="flex items-center gap-2 text-sm text-slate-700">
@@ -243,9 +243,7 @@ export default function DecisionForm({ onSubmit, isSubmitting }: Props) {
           ))}
         </div>
         <div className="max-w-xs">
-          <label className="block text-sm text-slate-600 mb-1">
-            Max retry count (blank = no limit)
-          </label>
+          <label className="block text-sm text-slate-600 mb-1">Max retry count (blank = no limit)</label>
           <input
             type="number"
             min={0}
@@ -261,7 +259,7 @@ export default function DecisionForm({ onSubmit, isSubmitting }: Props) {
         disabled={isSubmitting}
         className="bg-slate-900 text-white text-sm font-medium px-5 py-2.5 rounded hover:bg-slate-700 disabled:opacity-50"
       >
-        {isSubmitting ? "Deciding..." : "Get decision"}
+        {isSubmitting ? "Working..." : submitLabel}
       </button>
     </form>
   );

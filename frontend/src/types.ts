@@ -1,13 +1,14 @@
-// RevenueShield AI — Phase 6 frontend types.
-//
-// Mirror backend/app/schemas/decision.py and schemas/audit.py field-for-
-// field. No decision logic lives here or anywhere in the frontend — these
-// are pure data shapes for what the existing Phase 4/5 API already
-// returns.
+// RevenueShield AI — Phase 8 frontend types.
+// Pure data shapes matching the backend API. No decision logic lives here.
 
 export type Action = "do_nothing" | "retry" | "reminder" | "recovery_link";
 
-export const ACTIONS: Action[] = ["do_nothing", "retry", "reminder", "recovery_link"];
+export const ACTIONS: Action[] = [
+  "do_nothing",
+  "retry",
+  "reminder",
+  "recovery_link",
+];
 
 export const ACTION_LABELS: Record<Action, string> = {
   do_nothing: "Do nothing",
@@ -59,6 +60,14 @@ export interface ConstraintsAppliedResponse {
   removed_by_constraint: Record<string, string>;
 }
 
+export interface SafetyInfoResponse {
+  triggered: boolean;
+  reasons: string[];
+  original_selected_action: Action;
+  final_selected_action: Action;
+  overridden: boolean;
+}
+
 export interface DecisionResponse {
   transaction_id: string | null;
   customer_id: string | null;
@@ -71,6 +80,7 @@ export interface DecisionResponse {
   explanation: string;
   confidence: ConfidenceResponse;
   causal_disclaimer: string;
+  safety: SafetyInfoResponse;
 }
 
 export interface AuditRecordResponse extends DecisionResponse {
@@ -86,4 +96,28 @@ export interface AuditRecordListResponse {
 
 export interface ApiError {
   detail: string | { msg: string; loc: (string | number)[] }[];
+}
+
+export interface PaymentOrderResponse {
+  razorpay_order_id: string;
+  razorpay_key_id: string;
+  amount: number;
+  currency: string;
+  receipt: string | null;
+  decision: DecisionResponse;
+}
+
+export interface PaymentVerifyRequest {
+  razorpay_order_id: string;
+  razorpay_payment_id?: string;
+  razorpay_signature?: string;
+}
+
+export interface PaymentVerifyResponse {
+  razorpay_order_id: string;
+  razorpay_payment_id: string | null;
+  payment_status: string;
+  signature_verified: boolean;
+  amount: number;
+  decision: DecisionResponse;
 }
